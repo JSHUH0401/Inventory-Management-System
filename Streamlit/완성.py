@@ -443,9 +443,9 @@ with tab_check:
             time_diff = now_kst - last_check
             hours_diff = time_diff.total_seconds() / 3600
             
-            if hours_diff <= 24:
+            if hours_diff <= 168:
                 icon = "🟢" # 신선함 (24시간 이내)
-            elif hours_diff <= 72:
+            elif hours_diff <= 336:
                 icon = "🟡" # 주의 (3일 이내)
             else:
                 icon = "🔴" # 신뢰도 낮음 (3일 초과)
@@ -471,7 +471,7 @@ with tab_check:
     # 도움말 업데이트
     st.info("""
     💡 **예측 신호등 안내**
-    - 🟢 (높음): 실사 24시간 이내 | 🟡 (보통): 실사 3일 이내 | 🔴 (낮음): 실사 3일 초과 (실사 권장)
+    - 🟢: 신뢰도 높음 실사 후 7일 이내  🟡: 실사 14일 이내  🔴: 실사 14일 초과
     """)
 
     updated_dfs = []
