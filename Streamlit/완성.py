@@ -412,11 +412,10 @@ with tab_order:
 # -------------------------------------------------------------------------------------------
 # 메뉴 3: 재고 실사 (재고체크.py 기반)
 # -------------------------------------------------------------------------------------------
+# --- [메뉴 3: 재고 실사 부분 수정] ---
 with tab_check:
-    KST = timezone(timedelta(hours=9)) # 한국 표준시 설정
+    KST = timezone(timedelta(hours=9))
 
-    
-    # --- [데이터 로드 및 실시간 예측 계산] ---
     def get_stock_data_with_prediction():
         # 1. DB 데이터 로드 (STOCKS + ITEMS)
         res_stock = supabase.table("STOCKS").select("*, ITEMS(name, category)").execute()
@@ -427,40 +426,54 @@ with tab_check:
             df_stock['category'] = df_stock['ITEMS'].apply(lambda x: x.get('category') if isinstance(x, dict) else "기타")
             df_stock = df_stock.drop(columns=['ITEMS'])
 
-        # 2. 단위 정보 로드
         res_details = supabase.table("SUPPLIER_DETAILS").select("item_id, supplier_id, base_unit").execute()
         df_details = pd.DataFrame(res_details.data)
 
-        # 3. 데이터 병합
         merged_df = pd.merge(df_stock, df_details, on=['item_id', 'supplier_id'], how='left')
         merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
         
-        # 4. [핵심] 접속 시점 기준 실시간 예측 재고 계산
         now_kst = datetime.now(KST)
         predicted_stocks = []
-        
+        reliability_icons = [] # 신호등 리스트 추가
+
         for _, row in merged_df.iterrows():
             last_check = pd.to_datetime(row['last_checked_at']).tz_convert('Asia/Seoul')
-            weight_sum = get_total_weight(last_check, now_kst)
             
-            # 예측 공식: 현재재고 = 기준재고 - (일평균소모 * 가중치합)
+            # [추가] 신뢰도(신호등) 계산 로직
+            time_diff = now_kst - last_check
+            hours_diff = time_diff.total_seconds() / 3600
+            
+            if hours_diff <= 24:
+                icon = "🟢" # 신선함 (24시간 이내)
+            elif hours_diff <= 72:
+                icon = "🟡" # 주의 (3일 이내)
+            else:
+                icon = "🔴" # 신뢰도 낮음 (3일 초과)
+            
+            reliability_icons.append(icon)
+
+            # 예측 재고 계산
+            weight_sum = get_total_weight(last_check, now_kst)
             reduction = row['avg_consumption'] * weight_sum
             predicted_val = max(0, row['stock'] - reduction)
             predicted_stocks.append(round(predicted_val, 2))
         
+        merged_df['신뢰도'] = reliability_icons # 컬럼 추가
         merged_df['predicted_stock'] = predicted_stocks
         return merged_df
 
-    # --- 앱 UI 구성 ---
     st.title("재고 실사")
 
     df = get_stock_data_with_prediction()
     df['새로운 재고량'] = None
 
     st.subheader("오늘의 재고 점검 리스트")
-    st.info("💡 '예측 재고'는 시스템이 계산한 현재 예상치입니다. 실제 개수를 '실사 입력'에 적어주세요.")
+    # 도움말 업데이트
+    st.info("""
+    💡 **예측 신호등 안내**
+    - 🟢 (높음): 실사 24시간 이내 | 🟡 (보통): 실사 3일 이내 | 🔴 (낮음): 실사 3일 초과 (실사 권장)
+    """)
 
-    # 카테고리별 루프
     updated_dfs = []
     categories = sorted(df['category'].unique())
 
@@ -468,24 +481,25 @@ with tab_check:
         with st.expander(f"📂 {cat}", expanded=True):
             cat_df = df[df['category'] == cat].copy()
             
-            # UI에 보여줄 컬럼 구성 (predicted_stock을 '예측 재고'로 표시)
+            # [수정] data_editor 설정에 '신뢰도' 추가
             edited_cat_df = st.data_editor(
-                cat_df[['item_id', 'supplier_id', 'item_name', 'predicted_stock', 'base_unit', '새로운 재고량', 'last_checked_at', 'avg_consumption', 'stock']],
+                cat_df[['신뢰도', 'item_name', 'predicted_stock', 'base_unit', '새로운 재고량', 'item_id', 'supplier_id', 'last_checked_at', 'avg_consumption', 'stock']],
                 column_config={
+                    "신뢰도": st.column_config.TextColumn("상태", help="마지막 실사 후 경과 시간 기준 신뢰도"),
                     "item_id": None, "supplier_id": None, "avg_consumption": None, "stock": None,
                     "item_name": "품목명",
                     "predicted_stock": st.column_config.NumberColumn("예측 재고(장부)", format="%.2f"),
                     "base_unit": "단위",
-                    "새로운 재고량": st.column_config.NumberColumn("실사 입력", min_value=0, step=1, help="실제 매장에 남은 개수를 입력하세요."),
+                    "새로운 재고량": st.column_config.NumberColumn("실사 입력", min_value=0, step=1),
                     "last_checked_at": st.column_config.DatetimeColumn("마지막 실사일", format="YYYY-MM-DD HH:mm")
                 },
-                disabled=["item_name", "predicted_stock", "base_unit", "last_checked_at"],
+                disabled=["신뢰도", "item_name", "predicted_stock", "base_unit", "last_checked_at"],
                 hide_index=True,
                 use_container_width=True,
                 key=f"editor_{cat}"
             )
             updated_dfs.append(edited_cat_df)
-
+    
     if updated_dfs:
         final_edited_df = pd.concat(updated_dfs)
 
