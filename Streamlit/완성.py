@@ -38,7 +38,7 @@ def get_unified_data():
         df_s['category'] = df_s['ITEMS'].apply(lambda x: x.get('category') if isinstance(x, dict) else "기타")
     
     # SUPPLIER_DETAILS (안전재고, 단위, 환산계수)
-    res_d = supabase.table("SUPPLIER_DETAILS").select("*").execute()
+    res_d = supabase.table("SUPPLIER_DETAILS").select("*").eq("status", True).execute()
     df_d = pd.DataFrame(res_d.data) if 'res_details' in locals() else pd.DataFrame(res_d.data)
 
     if df_s.empty: return pd.DataFrame()
@@ -147,13 +147,36 @@ with tab_order:
         query = """
             id, name,
             SUPPLIER_DETAILS (
-                supplier_id, order_url, MOQ, safety_stock, order_unit_price,
+                supplier_id, order_url, MOQ, safety_stock, order_unit_price,status,
                 SUPPLIERS ( name )
             ),
             STOCKS ( stock, supplier_id )
         """
         response = supabase.table("ITEMS").select(query).execute()
-        return response.data
+        if not response.data:
+            return []
+
+        filtered_data = []
+        for item in response.data:
+            # [핵심] 해당 아이템의 공급처 상세 정보 중 status가 True인 것만 골라냅니다.
+            active_details = [
+                sd for sd in item.get("SUPPLIER_DETAILS", []) 
+                if sd.get("status") == True
+            ]
+            
+            # 판매 중인 공급처 상세 정보가 있는 경우에만 최종 리스트에 추가
+            if active_details:
+                item["SUPPLIER_DETAILS"] = active_details
+                
+                # 해당 공급처의 재고 데이터만 남기기 (선택 사항이나 데이터 무결성을 위해 추천)
+                active_sup_ids = [sd["supplier_id"] for sd in active_details]
+                item["STOCKS"] = [
+                    s for s in item.get("STOCKS", []) 
+                    if s["supplier_id"] in active_sup_ids
+                ]
+                
+                filtered_data.append(item)
+        return filtered_data
 
     if 'item_master' not in st.session_state:
         st.session_state.item_master = load_data()
@@ -417,7 +440,16 @@ with tab_check:
     KST = timezone(timedelta(hours=9))
 
     def get_stock_data_with_prediction():
-        # 1. DB 데이터 로드 (STOCKS + ITEMS)
+# 1. 판매 중인(status=True) 상세 정보만 먼저 가져오기
+        # .eq("status", True) 필터를 추가하여 DB에서 활성 상태인 품목만 선별합니다.
+        res_details = supabase.table("SUPPLIER_DETAILS").select("item_id, supplier_id, base_unit, status").eq("status", True).execute()
+        df_details = pd.DataFrame(res_details.data)
+        
+        # 만약 판매 중인 품목이 하나도 없다면 빈 데이터프레임 반환
+        if df_details.empty:
+            return pd.DataFrame()
+
+        # 2. 전체 재고 데이터 로드 (기존과 동일)
         res_stock = supabase.table("STOCKS").select("*, ITEMS(name, category)").execute()
         df_stock = pd.DataFrame(res_stock.data)
         
@@ -426,15 +458,12 @@ with tab_check:
             df_stock['category'] = df_stock['ITEMS'].apply(lambda x: x.get('category') if isinstance(x, dict) else "기타")
             df_stock = df_stock.drop(columns=['ITEMS'])
 
-        res_details = supabase.table("SUPPLIER_DETAILS").select("item_id, supplier_id, base_unit").execute()
-        df_details = pd.DataFrame(res_details.data)
-
-        merged_df = pd.merge(df_stock, df_details, on=['item_id', 'supplier_id'], how='left')
+        merged_df = pd.merge(df_stock, df_details, on=['item_id', 'supplier_id'], how='inner')
         merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
         
         now_kst = datetime.now(KST)
         predicted_stocks = []
-        reliability_icons = [] # 신호등 리스트 추가
+        reliability_icons = []
 
         for _, row in merged_df.iterrows():
             last_check = pd.to_datetime(row['last_checked_at']).tz_convert('Asia/Seoul')
@@ -471,7 +500,7 @@ with tab_check:
     # 도움말 업데이트
     st.info("""
     💡 **예측 신호등 안내**
-    - 🟢: 신뢰도 높음 실사 후 7일 이내 | 🟡: 실사 14일 이내 | 🔴: 실사 14일 초과
+    - 🟢: 실사 후 7일 이내 | 🟡: 실사 14일 이내 | 🔴: 실사 14일 초과
     """)
 
     updated_dfs = []
@@ -677,7 +706,55 @@ with tab_admin:
                         st.balloons()
                     except Exception as e:
                         st.error(f"❌ 등록 중 오류 발생: {e}")
+        
+        # --- [기존 adm_t1 코드 하단에 추가] ---
+        st.divider()
+        st.subheader("판매 상태 관리 (ON/OFF)")
+        st.info("더 이상 판매(발주)하지 않는 품목은 여기서 OFF로 설정하세요. 발주 추천 목록에서 제외됩니다.")
 
+        # 1. 데이터 로드 (품목명 + 공급처명 조인)
+        # SUPPLIER_DETAILS 테이블에 'status' 컬럼이 있다고 가정합니다.
+        res_active = supabase.table("SUPPLIER_DETAILS").select("item_id, supplier_id, status, ITEMS(name), SUPPLIERS(name)").execute()
+        
+        if res_active.data:
+            df_active = pd.DataFrame(res_active.data)
+            # 가독성을 위해 이름 추출
+            df_active['display_name'] = df_active.apply(
+                lambda x: f"[{x['SUPPLIERS']['name']}] {x['ITEMS']['name']}", axis=1
+            )
+            
+            # 2. 품목 선택 드롭다운
+            target_display = st.selectbox("상태를 변경할 품목 선택", options=df_active['display_name'].tolist())
+            
+            # 선택된 품목의 현재 상태 찾기
+            selected_row = df_active[df_active['display_name'] == target_display].iloc[0]
+            current_status = bool(selected_row['status'])
+            
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                # 3. True/False 선택 (라디오 버튼 또는 토글)
+                new_status = st.radio(
+                    f"**{target_display}**의 현재 상태: {'🟢 판매 중' if current_status else '🔴 판매 중단'}",
+                    options=[True, False],
+                    format_func=lambda x: "판매 중 (ON)" if x else "판매 중단 (OFF/단종)",
+                    index=0 if current_status else 1,
+                    horizontal=True
+                )
+            
+            with c2:
+                st.write("<div style='height: 28px;'></div>", unsafe_allow_html=True)
+                if st.button("상태 저장", use_container_width=True):
+                    try:
+                        supabase.table("SUPPLIER_DETAILS").update({"status": new_status}).match({
+                            "item_id": selected_row['item_id'],
+                            "supplier_id": selected_row['supplier_id']
+                        }).execute()
+                        st.success(f"✅ 변경 완료: {target_display} -> {'ON' if new_status else 'OFF'}")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"상태 변경 중 오류 발생: {e}")
+        else:
+            st.write("등록된 품목이 없습니다.")
     with adm_t2:
         target_tab = st.selectbox("수정할 테이블 선택", ["ITEMS", "STOCKS", "SUPPLIERS", "SUPPLIER_DETAILS", "PURCHASE_ORDERS", "PURCHASE_ITEMS"])
         
