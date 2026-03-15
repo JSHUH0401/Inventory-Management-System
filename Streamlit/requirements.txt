@@ -2,3 +2,6 @@ streamlit
 supabase
 pandas
 langchain-google-genai
+langchain.agents
+langchain_core.messages
+langchain_core.tools
