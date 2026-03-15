@@ -552,7 +552,7 @@ with tab_order:
 # --- [메뉴 3: 재고 실사 부분 수정] ---
 with tab_check:
     KST = timezone(timedelta(hours=9))
-    st.cache_data
+    @st.cache_data
     def get_stock_data_with_prediction():
 # 1. 판매 중인(status=True) 상세 정보만 먼저 가져오기
         # .eq("status", True) 필터를 추가하여 DB에서 활성 상태인 품목만 선별합니다.
