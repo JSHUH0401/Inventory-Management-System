@@ -2,11 +2,22 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone, timedelta
 from supabase import create_client, Client
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents import create_agent
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain_core.tools import tool
 
 # --- [1. 기본 설정 및 DB 연결] ---
 url: str = st.secrets["SUPABASE_URL"]
 key: str = st.secrets["SUPABASE_KEY"]
+gemini_key = st.secrets["GEMINI_API_KEY"]
 KST = timezone(timedelta(hours=9)) # 한국 표준시 설정
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-flash-latest", 
+    google_api_key=gemini_key, # Secrets에 키 저장 필요
+    temperature=0
+)
 
 @st.cache_resource
 def init_connection():
@@ -28,6 +39,7 @@ def get_total_weight(start_date, end_date):
     return total_weight
 
 # --- [3. 통합 데이터 로드 (PGRST200 에러 방지용 Pandas Merge 방식)] ---
+@st.cache_data(ttl=600)  # 10분간 기억 (보험용)
 def get_unified_data():
     """STOCKS, ITEMS, SUPPLIER_DETAILS를 수동으로 병합"""
     # STOCKS + ITEMS (이름, 카테고리)
@@ -46,10 +58,46 @@ def get_unified_data():
     merged = pd.merge(df_s, df_d, on=['item_id', 'supplier_id'], how='left')
     return merged.loc[:, ~merged.columns.duplicated()]
 
+@tool
+def get_cafe_inventory_context():
+    """매장의 전체 재고 현황, 공급처 단가, 안전재고, 최근 오차율 로그를 통합하여 가져옵니다."""
+    # 1. 기존 통합 데이터 함수 재사용
+    df_inv = get_unified_data()
+    
+    # 2. 최근 실사 로그 가져오기
+    res_l = supabase.table("STOCK_LOGS").select("*, ITEMS(name)").order("last_checked_at", desc=True).limit(45).execute()
+    df_l = pd.DataFrame(res_l.data)
+    
+    if not df_l.empty:
+        df_l['item_name'] = df_l['ITEMS'].apply(lambda x: x.get('name') if isinstance(x, dict) else "N/A")
+        df_l = df_l[['item_name', 'exp_stock', 'act_stock', 'error', 'error_rate', 'last_checked_at']]
+
+    # 3. 마크다운 컨텍스트 생성
+    context = "## [실시간 재고 및 발주 정보]\n"
+    context += df_inv[['category', 'item_name', 'stock', 'avg_consumption', 'safety_stock', 'order_unit_price']].to_markdown(index=False)
+    context += "\n\n## [최근 20건의 실사/오차 로그]\n"
+    context += df_l.to_markdown(index=False)
+    
+    return context
+
+# 시스템 프롬프트: '옴스잡스' 페르소나와 분석 중심 지침 반영
+system_msg = """당신은 카페 '만월경'의 인벤토리 참모입니다. 
+데이터를 기반으로 논리적으로 추론하고, 사장님이 묻지 않아도 잠재적 리스크를 먼저 짚어주세요. 판매중단된 품목은 제외하세요.
+- 재고 부족: stock < safety_stock 일 때 우선 보고
+- 오차 분석: error_rate가 높은 품목은 실사 신뢰도 문제 제기
+- 제안: 사장님이 효율적인 의사결정을 할 수 있도록 결론부터 말하세요."""
+
+
+@st.cache_resource
+def get_cached_agent(_model, _tools, system_prompt):
+    """에이전트 생성 과정을 딱 한 번만 수행하도록 캐싱합니다."""
+    return create_agent(_model, tools=_tools, system_prompt=system_prompt)
+
+agent_executor = create_agent(llm, tools=[get_cafe_inventory_context], system_prompt=system_msg)
+
 # --- [4. 상단 메뉴 구성 (Tabs)] ---
 st.set_page_config(page_title="만월경 통합 관리", layout="wide")
-tab_dash, tab_order, tab_check, tab_admin = st.tabs(["실시간 대시보드", "발주 관리", "재고 실사", "마스터 관리창"])
-
+tab_dash, tab_order, tab_check, tab_admin, tab_chat = st.tabs(["실시간 대시보드", "발주 관리", "재고 실사", "마스터 관리창", "AI 에이전트"])
 # -------------------------------------------------------------------------------------------
 # 메뉴 1: 실시간 대시보드 & 입고 (대시보드.py 기반)
 # -------------------------------------------------------------------------------------------
@@ -57,8 +105,23 @@ with tab_dash:
     st.title("실시간 재고 모니터링")
     df = get_unified_data()
     now_kst = datetime.now(KST)
+    res_logs = supabase.table("STOCK_LOGS").select("*, ITEMS(name)").order("last_checked_at", desc=True).limit(30).execute()
+    system_accuracy = 0.0 # 기본값
+    df_logs = pd.DataFrame()
+
+    if res_logs.data:
+        df_logs = pd.DataFrame(res_logs.data)
+        
+        # --- [추가/수정 로직: 오차율 계산용 필터링] ---
+        # 예측 재고가 0인 경우(신규 품목 등)를 제외하여 정확도 왜곡 방지
+        valid_logs = df_logs[df_logs['exp_stock'] > 0].copy()
+        
+        if not valid_logs.empty:
+            total_exp = valid_logs['exp_stock'].sum()
+            total_abs_error = valid_logs['error'].abs().sum()
+            # IRA 방식 정확도 계산
+            system_accuracy = max(0, 100 - (total_abs_error / total_exp * 100))
     
-    # 예측 재고 계산
     predicted_list = []
     for _, row in df.iterrows():
         lc = pd.to_datetime(row['last_checked_at']).tz_convert('Asia/Seoul')
@@ -68,62 +131,111 @@ with tab_dash:
     res_df = pd.DataFrame(predicted_list)
     danger = res_df[res_df['예측재고'] < res_df['safety_stock']]
     
-    c1, c2 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
     c1.metric("전체 품목", len(res_df))
     c2.metric("발주 필요", len(danger), delta_color="inverse")
     
+    # 위에서 계산된 정확도 표시
+    if not df_logs.empty:
+        c3.metric("시스템 재고 정확도", f"{system_accuracy:.1f}%")
+    else:
+        c3.metric("시스템 재고 정확도", "데이터 없음")
+    
     if not danger.empty:
-        st.subheader("⚠️ 안전재고 미달 품목")
+        st.subheader("안전재고 미달 품목")
         st.dataframe(danger[['category', 'item_name', '예측재고', 'safety_stock', 'base_unit']], use_container_width=True, hide_index=True)
+
+    # [인사이트 섹션 추가]
+    st.divider()
+    st.subheader("소진속도 급증 품목 (Top 5)")
+    
+    # 1. STOCK_LOGS에서 최신 로그 데이터 가져오기
+    # ITEMS와 조인하여 이름을 함께 가져옵니다.
+    
+    if res_logs.data:
+        df_logs = pd.DataFrame(res_logs.data)
+        # 조인된 데이터에서 품목명 추출
+        df_logs['item_name'] = df_logs['ITEMS'].apply(lambda x: x.get('name') if isinstance(x, dict) else "N/A")
+        
+        # 2. 속도 변화 비율 계산 (새 소모율 / 이전 소모율)
+        # 0으로 나누는 에러를 방지하기 위해 old_avg_consumption이 0보다 큰 경우만 계산
+        df_logs['speed_ratio'] = df_logs.apply(
+            lambda x: (x['new_avg_consumption'] / x['old_avg_consumption']) if x['old_avg_consumption'] > 0 else 1.0, 
+            axis=1
+        )
+        
+        # 3. 속도가 빨라진(비율 > 1.0) 품목 중 중복을 제거하고 최신 기록 기준으로 상위 5개 추출
+        # 같은 품목이 여러 번 로그에 찍혔을 경우 가장 최근(상단) 것만 남깁니다.
+        fast_df = df_logs.drop_duplicates(subset=['item_id']).sort_values(by='speed_ratio', ascending=False).head(5)      
+
+        if not fast_df.empty:
+            # 증가율 퍼센트 계산
+            fast_df['increase_pct'] = ((fast_df['speed_ratio'] - 1) * 100).round(1)
+            
+            # 깔끔한 카드 형태로 출력
+            for _, row in fast_df.iterrows():
+                with st.container(border=True):
+                    c1, c2 = st.columns([1, 4])
+                    c1.markdown(f"### {row['increase_pct']}%")
+                    c2.markdown(f"**{row['item_name']}**의 소모 속도가 평소보다 빨라졌습니다.  \n"
+                                f"현재 속도: 하루 {row['new_avg_consumption']:.2f}개 (기존: {row['old_avg_consumption']:.2f}개)")
+        else:
+            st.success("✅ 현재 소모 속도가 급격히 빨라진 품목이 없습니다. 평화로운 상태입니다.")
+    else:
+        st.info("💡 분석을 위한 로그 데이터가 아직 없습니다. '재고 실사'를 진행하면 데이터가 쌓이기 시작합니다.")
 
     st.divider()
     st.subheader("배송 중인 주문 및 입고 처리")
     # 배송 현황 로드
     res_o = supabase.table("PURCHASE_ORDERS").select("*, SUPPLIERS(name)").eq("status", "배송중").execute()
     orders = pd.DataFrame(res_o.data)
-    
-    if orders.empty: st.info("배송 중인 내역이 없습니다.")
+
+    if orders.empty: 
+        st.info("배송 중인 내역이 없습니다.")
     else:
+        # 루프는 한 번만 돌면 됩니다!
         for _, order in orders.iterrows():
             oid = order['order_id']
             col_info, col_btn = st.columns([5, 1])
+            
             with col_info:
-                #texp = st.expander(f"📦 주문 {order['SUPPLIERS']['name']} (결제액: {order['total_price']:,}원)")
-                for _, order in orders.iterrows():
-                    oid = order['order_id']
-                    col_info, col_btn = st.columns([5, 1])
-                    with col_info:
-                        # 1. expander 선언
-                        exp = st.expander(f"📦 주문 {order['SUPPLIERS']['name']} (결제액: {order['total_price']:,}원)")
-                        
-                        # 2. [추가] expander 내부에 상세 품목 표시
-                        with exp:
-                            # 해당 주문에 속한 아이템들 가져오기
-                            items_res = supabase.table("PURCHASE_ITEMS").select("*, ITEMS(name)").eq("order_id", oid).execute()
-                            if items_res.data:
-                                for itm in items_res.data:
-                                    # 품목명과 수량 표시
-                                    item_name = itm['ITEMS']['name']
-                                    qty = itm['actual_qty']
-                                    st.write(f"- {item_name}: **{qty}** 개")
-                            else:
-                                st.write("상세 품목 정보가 없습니다.")
+                # 1. expander 선언 (주문별로 하나씩)
+                exp = st.expander(f"📦 주문 {order['SUPPLIERS']['name']} (결제액: {order['total_price']:,}원)")
+                
+                # 2. expander 내부에 상세 품목 표시
+                with exp:
+                    items_res = supabase.table("PURCHASE_ITEMS").select("*, ITEMS(name)").eq("order_id", oid).execute()
+                    if items_res.data:
+                        for itm in items_res.data:
+                            item_name = itm['ITEMS']['name']
+                            qty = itm['actual_qty']
+                            st.write(f"- {item_name}: **{qty}** 개")
+                    else:
+                        st.write("상세 품목 정보가 없습니다.")
+            
             with col_btn:
+                # 버튼 위치 조정을 위한 여백
                 st.write("<div style='height: 5px;'></div>", unsafe_allow_html=True)
+                
+                # 고유한 key 설정 (f"rec_{oid}")
                 if st.button("입고완료", key=f"rec_{oid}", use_container_width=True):
-                    # 입고 처리: 단위 환산(conversion_factor) 적용
+                    # 입고 처리 로직
                     items_res = supabase.table("PURCHASE_ITEMS").select("*").eq("order_id", oid).execute()
                     for itm in items_res.data:
-                        # 환산 계수 조인 없이 가져오기 위해 세부 데이터 다시 활용
                         details = supabase.table("SUPPLIER_DETAILS").select("conversion_factor").match({"item_id": itm['item_id'], "supplier_id": order['supplier_id']}).execute()
                         cf = details.data[0]['conversion_factor'] if details.data else 1
                         inc_qty = itm['actual_qty'] * cf
                         
-                        curr_stock = supabase.table("STOCKS").select("stock").match({"item_id": itm['item_id'], "supplier_id": order['supplier_id']}).execute().data[0]['stock']
-                        supabase.table("STOCKS").update({"stock": float(curr_stock + inc_qty)}).match({"item_id": itm['item_id'], "supplier_id": order['supplier_id']}).execute()
+                        # 현재 재고 가져오기 및 업데이트
+                        stock_data = supabase.table("STOCKS").select("stock").match({"item_id": itm['item_id'], "supplier_id": order['supplier_id']}).execute().data
+                        if stock_data:
+                            curr_stock = stock_data[0]['stock']
+                            supabase.table("STOCKS").update({"stock": float(curr_stock + inc_qty)}).match({"item_id": itm['item_id'], "supplier_id": order['supplier_id']}).execute()
                     
+                    # 상태 업데이트 및 새로고침
                     supabase.table("PURCHASE_ORDERS").update({"status": "입고완료"}).eq("order_id", oid).execute()
-                    st.rerun()
+                    st.cache_data.clear() # <- 추가: 입고됐으니 재고 정보 새로고침
+                    #st.rerun()
 
 # -------------------------------------------------------------------------------------------
 # 메뉴 2: 발주 관리 (발주창v2.py 기반)
@@ -141,6 +253,7 @@ with tab_order:
     #########################################################################
 
     # 1. 초기 데이터 설정
+    @st.cache_data
     def load_data():
         # ERD 구조에 맞춰 Join 쿼리를 날립니다.
         # ITEMS를 가져오면서 연결된 상세정보와 재고를 한꺼번에 가져옴
@@ -230,14 +343,14 @@ with tab_order:
             if st.button("시스템 추천 발주", use_container_width=True, type=rec_style):
                 st.session_state.order_mode = "추천"
                 st.session_state.manual_cart = {}
-                st.rerun()
+                #st.rerun()
 
         with col_cus:
             cus_style = "primary" if st.session_state.order_mode == "커스텀" else "secondary"
             if st.button("커스텀 발주", use_container_width=True, type=cus_style):
                 st.session_state.order_mode = "커스텀"
                 st.session_state.manual_cart = {}
-                st.rerun()
+                #st.rerun()
 
         # --- 2. 품목 직접 추가 섹션 수정 ---
         with st.container(border=True):
@@ -272,7 +385,7 @@ with tab_order:
                     MOQ = detail.get("MOQ", 1) # 기본값 1
                     
                     st.session_state.manual_cart[key] = st.session_state.manual_cart.get(key, 0) + MOQ
-                    st.rerun()
+                    #st.rerun()
 
         # --- 3. 발주 목록 표시 (ERD 구조에 맞게 수정) ---
             st.write("---")
@@ -333,7 +446,7 @@ with tab_order:
                                     st.session_state.deleted_keys = set()
                                 st.session_state.deleted_keys.add((name, sup))
                                 
-                                st.rerun()
+                                #st.rerun()
 
                             # 이 아래 코드들이 실행되지 않아야 행이 남지 않습니다.
                             cols[1].write(f"**{name}**")
@@ -345,7 +458,7 @@ with tab_order:
                                 )
                                 if new_qty != qty:
                                     st.session_state.manual_cart[(name, s)] = new_qty
-                                    st.rerun()
+                                    #st.rerun()
 
                             raw_price = detail.get("order_unit_price")
                             unit_price = int(raw_price) if raw_price is not None else 0
@@ -423,9 +536,10 @@ with tab_order:
                             supabase.table("PURCHASE_ITEMS").insert(insert_items).execute()
 
                         # 4. 처리 완료 후 후속 작업 (재고 업데이트는 생략)
+                        st.cache_data.clear() # <- 추가: 입고됐으니 재고 정보 새로고침!
                         st.session_state.show_toast = True
                         st.session_state.manual_cart = {}
-                        st.rerun()
+                        #st.rerun()
 
                     except Exception as e:
                         st.error(f"발주 기록 저장 중 오류가 발생했습니다: {e}")
@@ -438,7 +552,7 @@ with tab_order:
 # --- [메뉴 3: 재고 실사 부분 수정] ---
 with tab_check:
     KST = timezone(timedelta(hours=9))
-
+    st.cache_data
     def get_stock_data_with_prediction():
 # 1. 판매 중인(status=True) 상세 정보만 먼저 가져오기
         # .eq("status", True) 필터를 추가하여 DB에서 활성 상태인 품목만 선별합니다.
@@ -546,32 +660,23 @@ with tab_check:
                     # 4. 재고 반영 및 학습 버튼 내부 수정
                     for index, row in updates.iterrows():
                         try:
-                            # [1단계] 데이터 추출 전 디버깅 (에러 발생 시 화면에 원인 출력)
-                            raw_val = row['새로운 재고량']
-                            
-                            # [2단계] 리스트/시리즈 여부 체크 및 강제 스칼라 변환
-                            if isinstance(raw_val, (pd.Series, list, pd.Index)):
-                                # 중복 컬럼 등으로 인해 리스트가 들어온 경우 첫 번째 값만 선택
-                                actual_qty = float(raw_val.iloc[0]) if hasattr(raw_val, 'iloc') else float(raw_val[0])
-                            else:
-                                actual_qty = float(raw_val)
-
-                            # [3단계] 다른 변수들도 동일하게 안전하게 추출 (중복 컬럼 대비)
-                            def get_value(r, col):
-                                v = r[col]
-                                if isinstance(v, (pd.Series, list)):
+                            def extract_scalar(v):
+                                if isinstance(v, (pd.Series, list, pd.Index)):
                                     return v.iloc[0] if hasattr(v, 'iloc') else v[0]
                                 return v
 
-                            current_stock = float(get_value(row, 'stock'))
-                            avg_cons = float(get_value(row, 'avg_consumption'))
-                            item_id = int(get_value(row, 'item_id'))
-                            supplier_id = int(get_value(row, 'supplier_id'))
-
-                            # --- 이후 학습 및 DB 업데이트 로직은 동일 ---
-                            last_val = get_value(row, 'last_checked_at')
+                            # 모든 변수 추출 시 extract_scalar를 적용하여 float() 에러 방지
+                            actual_qty = float(extract_scalar(row['새로운 재고량']))
+                            current_stock = float(extract_scalar(row['stock']))
+                            predicted_stock = float(extract_scalar(row['predicted_stock']))
+                            avg_cons = float(extract_scalar(row['avg_consumption']))
+                            item_id = int(extract_scalar(row['item_id']))
+                            supplier_id = int(extract_scalar(row['supplier_id']))
+                            
+                            # 시간 데이터 처리
+                            last_val = extract_scalar(row['last_checked_at'])
                             last_check_dt = pd.to_datetime(last_val)
-
+                            last_check_dt = pd.to_datetime(last_val)
                             # 2. 시간대(Timezone) 정보가 없으면 UTC를 입힌 후 한국 시간(KST)으로 변환
                             if last_check_dt.tzinfo is None:
                                 last_check_dt = last_check_dt.replace(tzinfo=timezone.utc).astimezone(KST)
@@ -583,9 +688,9 @@ with tab_check:
                             weight_sum = get_total_weight(last_check_dt, now_kst)
                             usage_diff = current_stock - actual_qty
                             actual_daily_usage = usage_diff / max(weight_sum, 0.1)
-                            
                             alpha = 0.3
                             new_avg = (avg_cons * (1 - alpha)) + (max(0, actual_daily_usage) * alpha)
+                            error_rate = (abs(float(actual_qty - predicted_stock)) / predicted_stock * 100) if predicted_stock > 0 else 0
                             
                             # DB 업데이트 실행
                             supabase.table("STOCKS").update({
@@ -596,17 +701,30 @@ with tab_check:
                                 "supplier_id": supplier_id
                             }).execute()
                             
+                            # 3. STOCK_LOGS 테이블 기록 
+                            supabase.table("STOCK_LOGS").insert({
+                                "item_id": item_id,
+                                "supplier_id": supplier_id,
+                                "exp_stock": predicted_stock,               # 예측 재고
+                                "act_stock": int(actual_qty),               # 실사 재고
+                                "error": float(actual_qty - predicted_stock), # 오차 (실사 - 예측)
+                                "error_rate": round(error_rate, 2),
+                                "last_checked_at": now_kst.strftime('%Y-%m-%dT%H:%M:%S+09:00'),
+                                "old_avg_consumption": avg_cons,            # 이전 평균 소모량
+                                "new_avg_consumption": float(new_avg)       # 새로운 평균 소모량
+                            }).execute()
+
                             success_count += 1
 
                         except Exception as row_err:
                             # 어떤 품목에서, 어떤 값 때문에 에러가 났는지 상세히 출력
                             st.error(f"⚠️ '{row['item_name']}' 처리 중 에러: {row_err}")
-                            st.write("문제가 된 데이터 실제 형태:", raw_val)
                             continue
                     
                     if success_count > 0:
                         st.toast(f"✅ {success_count}개 품목의 실사 결과가 반영되었습니다.")
-                        st.rerun()
+                        st.cache_data.clear() # <- 추가: 입고됐으니 재고 정보 새로고침!
+                        #st.rerun()
 
                 except Exception as e:
                     st.error(f"오류 발생: {e}")
@@ -701,7 +819,7 @@ with tab_admin:
                                 "avg_consumption": 0,
                                 "last_checked_at": datetime.now(timezone.utc).isoformat()
                             }).execute()
-
+                        st.cache_data.clear()
                         st.success(f"✅ '{item_name}' 등록이 완료되었습니다!")
                         st.balloons()
                     except Exception as e:
@@ -750,7 +868,8 @@ with tab_admin:
                             "supplier_id": selected_row['supplier_id']
                         }).execute()
                         st.success(f"✅ 변경 완료: {target_display} -> {'ON' if new_status else 'OFF'}")
-                        st.rerun()
+                        st.cache_data.clear()
+                        #st.rerun()
                     except Exception as e:
                         st.error(f"상태 변경 중 오류 발생: {e}")
         else:
@@ -768,6 +887,45 @@ with tab_admin:
                 updated_data = edited_df.to_dict(orient='records')
                 supabase.table(target_tab).upsert(updated_data).execute()
                 st.success(f"✅ {target_tab} 업데이트 성공!")
-                st.rerun()
+                st.cache_data.clear()
+                #st.rerun()
             except Exception as e:
                 st.error(f"❌ 반영 실패: {e}")
+
+# -------------------------------------------------------------------------------------------
+# 메뉴 5: AI 참모 (신규 추가)
+# -------------------------------------------------------------------------------------------
+with tab_chat:
+    st.title("AI 에이전트")
+    st.caption("매장 데이터를 분석하여 재고 관리 전략을 제안합니다.")
+
+    # 세션 상태로 대화 기록 유지
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # 채팅 메시지 출력
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # 채팅 입력창
+    if prompt := st.chat_input("예: 최근 오차가 심한 품목은 뭐야?"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("데이터 분석 및 보고서 작성 중..."):
+                inputs = {"messages": [HumanMessage(content=prompt)]}
+                # LangGraph 실행 결과에서 마지막 AI 메시지 추출
+                config = {"configurable": {"thread_id": "cafe_session"}}
+                response = agent_executor.invoke(inputs, config=config)
+                last_msg = response["messages"][-1]
+
+                # 1. 만약 리스트 형태의 복잡한 구조라면 'text' 필드만 가져옵니다.
+                if isinstance(last_msg.content, list):
+                    final_answer = last_msg.content[0].get('text', str(last_msg.content))
+                else:
+                    final_answer = last_msg.content
+
+                st.markdown(final_answer)
