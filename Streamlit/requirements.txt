@@ -1,7 +1,7 @@
 streamlit
-supabase
 pandas
+supabase
+langchain
 langchain-google-genai
-langchain.agents
-langchain_core.messages
-langchain_core.tools
+langchain-core
+langchain-community
