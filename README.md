@@ -116,3 +116,50 @@ erDiagram
     ├── Componenets/          # 기능별 UI 모듈화 (Admin, Dashboard, Order 등)
     ├── Utilities/            # 요일 가중치 기반 재고 예측 알고리즘 및 DB 커넥터
     └── StockManagementSystem.py # 메인 (Streamlit Main)
+```
+---
+## 4. 웹시스템 화면
+<details>
+  <summary><b>재고 대시보드</b></summary>
+  <p align="center">
+    <img src="./streamlit/Images/Dashboard.png" width="90%">
+    <br>
+    <em>실시간 재고 현황과 안전재고 상태를 시각화하여 모니터링하는 화면입니다.</em>
+  </p>
+</details>
+
+<details>
+  <summary><b>발주 관리</b></summary>
+  <p align="center">
+    <img src="./streamlit/Images/Order.png" width="90%">
+    <br>
+    <em>시스템 추천 및 커스텀 발주를 지원하며 공급처별 발주 내역을 관리하는 화면입니다.</em>
+  </p>
+</details>
+
+<details>
+  <summary><b>재고 실사</b></summary>
+  <p align="center">
+    <img src="./streamlit/Images/StockCount.png" width="90%">
+    <br>
+    <em>전산 재고와 실제 재고의 오차를 보정하고 실사 이력을 기록하는 화면입니다.</em>
+  </p>
+</details>
+
+<details>
+  <summary><b>마스터 데이터 관리</b></summary>
+  <p align="center">
+    <img src="./streamlit/Images/MasterData.png" width="90%">
+    <br>
+    <em>품목 정보, 공급처 상세 기준 및 기초 재고 데이터를 설정하고 관리하는 화면입니다.</em>
+  </p>
+</details>
+
+<details>
+  <summary><b>AI 에이전트</b></summary>
+  <p align="center">
+    <img src="./streamlit/Images/AIAgent.png" width="90%">
+    <br>
+    <em>자연어 질의를 통해 재고 데이터 분석 및 운영 인사이트를 제공하는 채팅 화면입니다.</em>
+  </p>
+</details>
