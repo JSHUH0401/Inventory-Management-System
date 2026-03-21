@@ -115,18 +115,8 @@ erDiagram
 
 ```text
 .
-├── database/                 
-│   └── functions/            # 
-└── streamlit/                
-    ├── .streamlit/           # Streamlit 환경 설정
-    ├── Componenets/          # 각 화면의 UI 구성 파일들
-    │   ├── AdminPage.py      # 마스터 데이터 관리 페이지
-    │   ├── AIAgentPage.py    # AI 에이전트 페이지
-    │   ├── DashboardPage.py  # 실시간 재고 대시보드 페이지
-    │   ├── InventoryCountPage.py # 재고 실사 페이지
-    │   └── OrderPage.py      # 발주 페이지
-    ├── Utilities/            # 비즈니스 로직 및 공통 모듈
-    │   ├── StockCalculation.py # 재고 예측 알고리즘
-    │   └── Database.py       # DB 커넥터 및 쿼리 처리
-    ├── StockManagementSystem.py # 전체 앱 실행 메인 파일
-    └── requirements.txt      # 라이브러리 파일
+├── database/                 # [Data Layer] DB 함수 및 트리거를 통한 서버 사이드 로직 관리
+└── streamlit/                # [Service Layer] 사용자 인터페이스 및 비즈니스 로직 계층
+    ├── Componenets/          # 기능별 UI 모듈화 (Admin, Dashboard, Order 등)
+    ├── Utilities/            # 요일 가중치 기반 재고 예측 알고리즘 및 DB 커넥터
+    └── StockManagementSystem.py # 메인 (Streamlit Main)
