@@ -4,7 +4,7 @@
 
 ---
 
-## 1. 시스템 아키텍처 (System Architecture)
+## 1. 시스템 아키텍처
 **1. Presentation Tier (UI/UX)**
 - 기술 스택: Streamlit
 - 설계 특징: 모든 데이터 조회 로직에 Streamlit 캐싱을 적용해 로딩 시간을 단축
@@ -94,7 +94,7 @@ erDiagram
         int actual_qty
     }
 ```
-주요 테이블 설명
+**주요 테이블 설명**
 - SUPPLIER_DETAILS
    - 설계목적: 발주, 입고, 재고실사에 필요한 MOQ, 안전재고, 주문단위당 개수 등을 포함
    - 핵심필드
@@ -109,10 +109,6 @@ erDiagram
 ---
 
 ## 3. 디렉토리 구조
-본 프로젝트는 유지보수와 확장성을 고려하여 **계층형 모듈화 아키텍처**를 채택했습니다.
-
-
-
 ```text
 .
 ├── database/                 # [Data Layer] DB 함수 및 트리거를 통한 서버 사이드 로직 관리
