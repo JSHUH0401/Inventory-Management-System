@@ -3,8 +3,10 @@ import pandas as pd
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.agents import create_agent
 from langchain_core.tools import tool
-from Database import supabase, get_unified_inventory_data
+from Utilities.Database import supabase, get_unified_inventory_data
 from langchain_core.messages import HumanMessage
+
+### 재고 관련 AI Agent ###
 
 def ask_agent(user_prompt):
     """

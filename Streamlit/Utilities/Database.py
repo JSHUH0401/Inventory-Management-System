@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from supabase import create_client
 
+### DB 불러오기 ###
+
 # DB 키, 정보 불러오기
 URL = st.secrets["SUPABASE_URL"]
 KEY = st.secrets["SUPABASE_KEY"]

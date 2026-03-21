@@ -1,5 +1,7 @@
 from datetime import timezone, timedelta
 
+### 재고 자동차감 알고리즘 ###
+
 #요일별 가중치를 반영한 품목별 예측 재고 계산
 def get_total_weight(start_date, end_date):
     """두 날짜 사이의 요일별 소모 가중치 합계 계산"""
