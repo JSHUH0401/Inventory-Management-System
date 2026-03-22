@@ -119,7 +119,7 @@ erDiagram
     └── StockManagementSystem.py # 메인 (Streamlit Main)
 ```
 ---
-### 4. 웹시스템 화면
+### 4. 웹시스템 결과물
 <details>
   <summary><b>재고 대시보드</b></summary>
   <p align="center">
