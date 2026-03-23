@@ -125,7 +125,7 @@ erDiagram
   <p align="center">
     <img src="./Streamlit/Images/Dashboard.png" width="90%">
     <br>
-    <em>실시간 재고 현황과 안전재고 상태를 시각화하여 모니터링하는 화면입니다.</em>
+    <em>실시간 재고 현황과 안전재고 상태를 시각화하여 모니터링</em>
   </p>
 </details>
 
@@ -134,7 +134,7 @@ erDiagram
   <p align="center">
     <img src="./Streamlit/Images/Order.png" width="90%">
     <br>
-    <em>시스템 추천 및 커스텀 발주를 지원하며 공급처별 발주 내역을 관리하는 화면입니다.</em>
+    <em>시스템 추천 및 커스텀 발주를 지원하며 공급처별 발주를 관리</em>
   </p>
 </details>
 
@@ -143,7 +143,7 @@ erDiagram
   <p align="center">
     <img src="./Streamlit/Images/StockCount.png" width="90%">
     <br>
-    <em>전산 재고와 실제 재고의 오차를 보정하고 실사 이력을 기록하는 화면입니다.</em>
+    <em>재고실사를 하며 전산 재고와 실재고의 오차를 보정</em>
   </p>
 </details>
 
@@ -152,7 +152,7 @@ erDiagram
   <p align="center">
     <img src="./Streamlit/Images/MasterData.png" width="90%">
     <br>
-    <em>품목 정보, 공급처 상세 기준 및 기초 재고 데이터를 설정하고 관리하는 화면입니다.</em>
+    <em>품목 정보, 공급처 상세 기준 및 재고 데이터를 관리</em>
   </p>
 </details>
 
@@ -161,6 +161,6 @@ erDiagram
   <p align="center">
     <img src="./Streamlit/Images/AIAgent.png" width="90%">
     <br>
-    <em>자연어 질의를 통해 재고 데이터 분석 및 운영 인사이트를 제공하는 채팅 화면입니다.</em>
+    <em>자연어 질의를 통해 재고 데이터 분석 및 운영 인사이트를 제공</em>
   </p>
 </details>
