@@ -37,7 +37,7 @@ erDiagram
     %% [Domain 3: Transaction]
     PURCHASE_ORDERS ||--|{ PURCHASE_ITEMS : ""
     ITEMS ||--o{ PURCHASE_ITEMS : ""
-    SUPPLIERS ||--o{ PURCHASE_ORDERS : "발주처 지정"
+    SUPPLIERS ||--o{ PURCHASE_ORDERS : ""
     ITEMS {
         int id PK
         string name
